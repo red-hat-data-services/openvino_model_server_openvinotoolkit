@@ -20,7 +20,7 @@ FROM $BASE_IMAGE as base_build
 LABEL version="1.0.0"
 
 ARG ov_source_branch=releases/2021/2
-ARG ovms_metadata_file
+ARG ovms_metadata_file=.workspace/metadata.json
 
 ARG INSTALL_DIR=/opt/intel/openvino
 ARG TEMP_DIR=/tmp/openvino_installer
