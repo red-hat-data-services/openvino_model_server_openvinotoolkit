@@ -89,13 +89,12 @@ ARG NVIDIA=0
 # hadolint ignore=DL3003
 RUN if [ "$NVIDIA" == "1" ] ; then true ; else exit 0 ; fi ; \
     yum install -y  \
-        tensorrt \
         libzstd-devel \
         cuda-11-8 \
-        libcudnn8 \
-        libcudnn8-devel \
-        libcutensor1 \
-        libcutensor-devel \
+        libcudnn8-8.6.0.163-1.cuda11.8 \
+        libcudnn8-devel-8.6.0.163-1.cuda11.8 \
+        libcutensor1-1.6.1.5-1 \
+        libcutensor-devel-1.6.1.5-1 \
         cuda-cudart-devel-11-8 && \
     yum install -y python38-Cython && \
     curl -L https://github.com/Kitware/ninja/releases/download/v1.10.0.gfb670.kitware.jobserver-1/ninja-1.10.0.gfb670.kitware.jobserver-1_x86_64-linux-gnu.tar.gz | tar xzv --strip-components=1 -C /usr/local/bin && \
@@ -199,6 +198,7 @@ RUN if [ "$ov_use_binary" = "1" ] && [ "$DLDT_PACKAGE_URL" != "" ]; then true ; 
 ENV OPENVINO_BUILD_PATH=/cuda_plugin_build
 ENV OPENVINO_HOME=/openvino
 ENV OPENVINO_CONTRIB=/openvino_contrib
+ARG ov_contrib_branch=releases/2022/3
 
 # hadolint ignore=DL3003
 RUN if [ "$NVIDIA" == "1" ] ; then true ; else exit 0 ; fi ; \
