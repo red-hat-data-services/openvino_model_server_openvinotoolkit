@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM golang:1.18
+FROM golang:1.20.10
 
 RUN apt-get update && \
     apt-get -y install git unzip build-essential autoconf libtool protobuf-compiler libprotobuf-dev && \
