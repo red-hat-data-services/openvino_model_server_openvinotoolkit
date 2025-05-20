@@ -5,3 +5,4 @@ onnx==1.15.0
 optimum[openvino,nncf]>=1.14.1
 ovmsclient
 openvino
+transformers>=4.50.0 # not directly required, pinned by Snyk to avoid a vulnerability
