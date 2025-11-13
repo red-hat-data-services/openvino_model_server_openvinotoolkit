@@ -18,13 +18,18 @@
 #include "pythonnoderesources.hpp"
 #include "src/python/ovms_py_tensor.hpp"
 
+#pragma warning(push)
+#pragma warning(disable : 4005 6001 6385 6386 6326 6011 6246 4456)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "mediapipe/framework/calculator_framework.h"
 #pragma GCC diagnostic pop
-
+#pragma warning(pop)
+#pragma warning(push)
+#pragma warning(disable : 6326 28182 6011 28020)
 #include <pybind11/embed.h>  // everything needed for embedding
 #include <pybind11/stl.h>
+#pragma warning(pop)
 
 #include "python_backend.hpp"
 
@@ -62,6 +67,14 @@ class PythonExecutorCalculator : public CalculatorBase {
         }
     }
 
+    void validateInputTensor(const py::object& pyInput) {
+        try {
+            nodeResources->pythonBackend->validateOvmsPyTensor(pyInput);
+        } catch (UnexpectedPythonObjectError& e) {
+            throw UnexpectedInputPythonObjectError(e);
+        }
+    }
+
     void prepareInputs(CalculatorContext* cc, std::vector<py::object>* pyInputs) {
         for (const std::string& tag : cc->Inputs().GetTags()) {
             if (tag != "LOOPBACK") {
@@ -71,9 +84,17 @@ class PythonExecutorCalculator : public CalculatorBase {
                     continue;
                 }
                 const py::object& pyInput = cc->Inputs().Tag(tag).Get<PyObjectWrapper<py::object>>().getObject();
-                nodeResources->pythonBackend->validateOvmsPyTensor(pyInput);
+                validateInputTensor(pyInput);
                 pyInputs->push_back(pyInput);
             }
+        }
+    }
+
+    void validateOutputTensor(const py::object& pyOutput) {
+        try {
+            nodeResources->pythonBackend->validateOvmsPyTensor(pyOutput);
+        } catch (UnexpectedPythonObjectError& e) {
+            throw UnexpectedOutputPythonObjectError(e);
         }
     }
 
@@ -81,7 +102,7 @@ class PythonExecutorCalculator : public CalculatorBase {
         py::gil_scoped_acquire acquire;
         for (py::handle pyOutputHandle : pyOutputs) {
             py::object pyOutput = pyOutputHandle.cast<py::object>();
-            nodeResources->pythonBackend->validateOvmsPyTensor(pyOutput);
+            validateOutputTensor(pyOutput);
             std::string outputName = pyOutput.attr("name").cast<std::string>();
 
             auto it = nodeResources->outputsNameTagMapping.find(outputName);
@@ -121,7 +142,7 @@ class PythonExecutorCalculator : public CalculatorBase {
 
     void generate(CalculatorContext* cc, mediapipe::Timestamp& timestamp) {
         py::list pyOutputs = py::cast<py::list>(*pyIteratorPtr->getObject());
-        pushOutputs(cc, pyOutputs, timestamp, true);
+        pushOutputs(cc, std::move(pyOutputs), timestamp, true);
         ++(pyIteratorPtr->getObject());  // increment iterator
     }
 
@@ -135,11 +156,11 @@ class PythonExecutorCalculator : public CalculatorBase {
 
     void handleExecutionResult(CalculatorContext* cc, py::object executionResult) {
         if (py::isinstance<py::list>(executionResult)) {
-            pushOutputs(cc, executionResult, outputTimestamp, false);
+            pushOutputs(cc, std::move(executionResult), outputTimestamp, false);
         } else if (py::isinstance<py::iterator>(executionResult)) {
             if (!hasLoopback)
                 throw BadPythonNodeConfigurationError("Execute yielded, but LOOPBACK is not defined in the node");
-            initializeGenerator(executionResult);
+            initializeGenerator(std::move(executionResult));
             generate(cc, outputTimestamp);
         } else {
             throw UnexpectedPythonObjectError(executionResult, "list or generator");
@@ -184,6 +205,9 @@ public:
         return absl::OkStatus();
     }
 
+#define RETURN_EXECUTION_FAILED_STATUS() \
+    return absl::Status(absl::StatusCode::kInternal, "Error occurred during graph execution")
+
     absl::Status Process(CalculatorContext* cc) final {
         LOG(INFO) << "PythonExecutorCalculator [Node: " << cc->NodeName() << "] Process start";
         py::gil_scoped_acquire acquire;
@@ -196,7 +220,7 @@ public:
                 if (!generatorFinished()) {
                     generate(cc, outputTimestamp);
                 } else {
-                    LOG(INFO) << "PythonExecutorCalculator [Node: " << cc->NodeName() << "] finished generating. Reseting the generator.";
+                    LOG(INFO) << "PythonExecutorCalculator [Node: " << cc->NodeName() << "] finished generating. Resetting the generator.";
                     resetGenerator();
                 }
             } else {
@@ -207,28 +231,30 @@ public:
 
                 std::vector<py::object> pyInputs;
                 prepareInputs(cc, &pyInputs);
-                py::object executeResult = std::move(nodeResources->ovmsPythonModel->attr("execute")(pyInputs));
+                py::object executeResult = nodeResources->ovmsPythonModel->attr("execute")(pyInputs);
                 handleExecutionResult(cc, executeResult);
             }
         } catch (const UnexpectedOutputTensorError& e) {
             LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution: " << e.what();
-            return absl::Status(absl::StatusCode::kInternal, "Python execute function returned unexpected output");
-        } catch (const UnexpectedPythonObjectError& e) {
-            // TODO: maybe some more descriptive information where to seek the issue.
-            LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution. Wrong object on execute input or output: " << e.what();
-            return absl::Status(absl::StatusCode::kInternal, "Python execute function received or returned bad value");
+            RETURN_EXECUTION_FAILED_STATUS();
+        } catch (const UnexpectedOutputPythonObjectError& e) {
+            LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution. Wrong object on execute output: " << e.what();
+            RETURN_EXECUTION_FAILED_STATUS();
+        } catch (const UnexpectedInputPythonObjectError& e) {
+            LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution. Wrong object on execute input: " << e.what();
+            RETURN_EXECUTION_FAILED_STATUS();
         } catch (const BadPythonNodeConfigurationError& e) {
             LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution: " << e.what();
-            return absl::Status(absl::StatusCode::kInternal, "Error occurred due to bad Python node configuration");
+            RETURN_EXECUTION_FAILED_STATUS();
         } catch (const pybind11::error_already_set& e) {
             LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution: " << e.what();
-            return absl::Status(absl::StatusCode::kInternal, "Error occurred during Python code execution");
+            RETURN_EXECUTION_FAILED_STATUS();
         } catch (std::exception& e) {
             LOG(INFO) << "Error occurred during node " << cc->NodeName() << " execution: " << e.what();
-            return absl::Status(absl::StatusCode::kUnknown, "Unexpected error occurred");
+            RETURN_EXECUTION_FAILED_STATUS();
         } catch (...) {
             LOG(INFO) << "Unexpected error occurred during node " << cc->NodeName() << " execution";
-            return absl::Status(absl::StatusCode::kUnknown, "Unexpected error occurred");
+            RETURN_EXECUTION_FAILED_STATUS();
         }
         LOG(INFO) << "PythonExecutorCalculator [Node: " << cc->NodeName() << "] Process end";
         return absl::OkStatus();

@@ -16,8 +16,12 @@
 
 #include "src/python/ovms_py_tensor.hpp"
 
+#include <optional>
+#pragma warning(push)
+#pragma warning(disable : 6326 28182 6011 28020)
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#pragma warning(pop)
 
 namespace py = pybind11;
 using namespace ovms;
@@ -34,9 +38,18 @@ PYBIND11_MODULE(pyovms, m) {
                 m.strides,
                 true);  // Underlying buffer is readonly
         })
-        .def(py::init<std::string, const py::buffer&>())
-        .def_static("create_from_data", [](const std::string& name, void* ptr, const std::vector<py::ssize_t>& shape, const std::string& datatype, py::ssize_t size, bool copy) {
+        .def(py::init([](std::string& name, const py::buffer& buffer, const std::optional<std::vector<py::ssize_t>>& shape, const std::optional<std::string>& datatype) {
+            return std::make_unique<OvmsPyTensor>(name, buffer, shape, datatype);
+        }),
+            py::arg("name"),
+            py::arg("buffer"),
+            py::arg("shape") = std::nullopt,
+            py::arg("datatype") = std::nullopt)
+        .def_static("_create_from_data", [](const std::string& name, void* ptr, const std::vector<py::ssize_t>& shape, const std::string& datatype, py::ssize_t size, bool copy) {
             return std::make_unique<OvmsPyTensor>(name, ptr, shape, datatype, size, copy);
+        })
+        .def_static("_create_without_data", [](const std::string& name, const std::vector<py::ssize_t>& shape, const std::string& datatype, py::ssize_t size) {
+            return std::make_unique<OvmsPyTensor>(name, shape, datatype, size);
         })
         .def_readonly("name", &OvmsPyTensor::name)
         .def_readonly("ptr", &OvmsPyTensor::ptr)

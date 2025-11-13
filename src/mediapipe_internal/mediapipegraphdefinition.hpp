@@ -29,28 +29,63 @@
 #include "../kfs_frontend/kfs_utils.hpp"
 #include "../metric.hpp"
 #include "../tensorinfo.hpp"
-#include "../timer.hpp"
-#include "../version.hpp"
+
+#pragma warning(push)
+#pragma warning(disable : 4005 4309 6001 6385 6386 6326 6011 4005 4456 6246)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "mediapipe/framework/calculator_graph.h"
 #include "mediapipe/framework/port/parse_text_proto.h"
 #include "mediapipe/framework/port/status.h"
 #pragma GCC diagnostic pop
+#pragma warning(pop)
 
 #include "mediapipegraphconfig.hpp"
 #include "packettypes.hpp"
+
+#include "../sidepacket_servable.hpp"
+#include "../embeddings/embeddings_servable.hpp"
+#include "../rerank/rerank_servable.hpp"
 
 namespace ovms {
 class MediapipeGraphDefinitionUnloadGuard;
 class MetricConfig;
 class MetricRegistry;
+class MediapipeServableMetricReporter;
 class ModelManager;
 class MediapipeGraphExecutor;
 class Status;
 class PythonBackend;
 class PythonNodeResources;
+class GenAiServable;
+struct ImageGenerationPipelines;
 using PythonNodeResourcesMap = std::unordered_map<std::string, std::shared_ptr<PythonNodeResources>>;
+using GenAiServableMap = std::unordered_map<std::string, std::shared_ptr<GenAiServable>>;
+using RerankServableMap = std::unordered_map<std::string, std::shared_ptr<RerankServable>>;
+using EmbeddingsServableMap = std::unordered_map<std::string, std::shared_ptr<EmbeddingsServable>>;
+using ImageGenerationPipelinesMap = std::unordered_map<std::string, std::shared_ptr<ImageGenerationPipelines>>;
+
+struct GraphSidePackets {
+    PythonNodeResourcesMap pythonNodeResourcesMap;
+    GenAiServableMap genAiServableMap;
+    ImageGenerationPipelinesMap imageGenPipelinesMap;
+    EmbeddingsServableMap embeddingsServableMap;
+    RerankServableMap rerankServableMap;
+    void clear() {
+        pythonNodeResourcesMap.clear();
+        genAiServableMap.clear();
+        imageGenPipelinesMap.clear();
+        embeddingsServableMap.clear();
+        rerankServableMap.clear();
+    }
+    bool empty() {
+        return (pythonNodeResourcesMap.empty() &&
+                genAiServableMap.empty() &&
+                imageGenPipelinesMap.empty() &&
+                embeddingsServableMap.empty() &&
+                rerankServableMap.empty());
+    }
+};
 
 class MediapipeGraphDefinition {
     friend MediapipeGraphDefinitionUnloadGuard;
@@ -73,8 +108,8 @@ public:
     const tensor_map_t getInputsInfo() const;
     const tensor_map_t getOutputsInfo() const;
     const MediapipeGraphConfig& getMediapipeGraphConfig() const { return this->mgconfig; }
-
-    Status create(std::shared_ptr<MediapipeGraphExecutor>& pipeline, const KFSRequest* request, KFSResponse* response);
+    MediapipeServableMetricReporter& getMetricReporter() const { return *this->reporter; }
+    Status create(std::shared_ptr<MediapipeGraphExecutor>& pipeline);
 
     Status reload(ModelManager& manager, const MediapipeGraphConfig& config);
     Status validate(ModelManager& manager);
@@ -85,13 +120,17 @@ public:
     static constexpr uint64_t WAIT_FOR_LOADED_DEFAULT_TIMEOUT_MICROSECONDS = 500000;
     static const std::string SCHEDULER_CLASS_NAME;
     static const std::string PYTHON_NODE_CALCULATOR_NAME;
-    Status waitForLoaded(std::unique_ptr<MediapipeGraphDefinitionUnloadGuard>& unloadGuard, const uint waitForLoadedTimeoutMicroseconds = WAIT_FOR_LOADED_DEFAULT_TIMEOUT_MICROSECONDS);
+    static const std::string LLM_NODE_CALCULATOR_NAME;
+    static const std::string IMAGE_GEN_CALCULATOR_NAME;
+    static const std::string EMBEDDINGS_NODE_CALCULATOR_NAME;
+    static const std::string RERANK_NODE_CALCULATOR_NAME;
+    Status waitForLoaded(std::unique_ptr<MediapipeGraphDefinitionUnloadGuard>& unloadGuard, const uint32_t waitForLoadedTimeoutMicroseconds = WAIT_FOR_LOADED_DEFAULT_TIMEOUT_MICROSECONDS);
 
     // Pipelines are not versioned and any available definition has constant version equal 1.
     static constexpr model_version_t VERSION = 1;
 
 protected:
-    PythonNodeResourcesMap pythonNodeResourcesMap;
+    GraphSidePackets sidePacketMaps;
 
     struct ValidationResultNotifier {
         ValidationResultNotifier(PipelineDefinitionStatus& status, std::condition_variable& loadedNotify) :
@@ -156,6 +195,8 @@ private:
     std::atomic<uint64_t> requestsHandlesCounter = 0;
 
     PythonBackend* pythonBackend;
+
+    std::unique_ptr<MediapipeServableMetricReporter> reporter;
 };
 
 class MediapipeGraphDefinitionUnloadGuard {
